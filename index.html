@@ -16,9 +16,8 @@
         button { background-color: #dc2626; color: white; border: none; padding: 10px 15px; font-weight: bold; border-radius: 6px; cursor: pointer; }
         button:hover { background-color: #b91c1c; }
         button.secondary { background-color: #64748b; }
-        button.browse { background-color: #0284c7; }
-        button.browse:hover { background-color: #0369a1; }
-        .dropzone { border: 2px dashed #cbd5e1; border-radius: 8px; padding: 25px; text-align: center; background: #f8fafc; }
+        .dropzone { border: 2px dashed #cbd5e1; border-radius: 8px; padding: 30px; text-align: center; background: #f8fafc; cursor: pointer; transition: all 0.2s; }
+        .dropzone.dragover { background: #fee2e2; border-color: #dc2626; }
         table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
         th, td { border: 1px solid #e2e8f0; padding: 8px; text-align: left; }
         th { background: #f1f5f9; }
@@ -43,10 +42,10 @@
 
     <div class="card">
         <label>📄 Factures commerciales (PDF)</label>
-        <div class="dropzone">
-            <b style="font-size: 14px;">Sélectionnez vos factures PDF :</b><br><br>
-            <!-- Bouton direct pour ouvrir l'explorateur Windows sans souci -->
-            <button class="browse" onclick="document.getElementById('fileInput').click()">📁 Parcourir mes dossiers</button>
+        <!-- Zone interactive : Glisser-déposer OU Clic pour parcourir -->
+        <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+            <b style="font-size: 15px;">📁 Glissez vos fichiers PDF ici ou cliquez pour parcourir</b><br>
+            <span style="font-size: 13px; color: #64748b;">(Plusieurs fichiers PDF acceptés simultanément)</span>
             <input type="file" id="fileInput" accept="application/pdf" multiple style="display:none" onchange="handleFiles(this.files)">
         </div>
         <div id="fileList" style="margin-top:12px; font-size:13px; color:#1e293b; font-weight: bold;">Aucun fichier sélectionné</div>
@@ -95,132 +94,35 @@
         showMsg('statusKey', '✅ Clés enregistrées avec succès !', 'success');
     }
 
+    // Gestion du Glisser-Déposer robuste
+    const dropzone = document.getElementById('dropzone');
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropzone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzone.classList.add('dragover');
+        }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropzone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzone.classList.remove('dragover');
+        }, false);
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+        let dt = e.dataTransfer;
+        let files = dt.files;
+        handleFiles(files);
+    }, false);
+
+    // Empêcher l'ouverture du PDF par le navigateur si lâché hors zone
+    window.addEventListener('dragover', (e) => e.preventDefault(), false);
+    window.addEventListener('drop', (e) => e.preventDefault(), false);
+
     function handleFiles(files) {
         selectedFiles = Array.from(files).filter(f => f.type === 'application/pdf');
-        let fileNames = selectedFiles.map(f => f.name).join(', ');
-        let listEl = document.getElementById('fileList');
-        if (selectedFiles.length > 0) {
-            listEl.innerText = `✅ ${selectedFiles.length} fichier(s) sélectionné(s) : ${fileNames}`;
-            document.getElementById('processBtn').disabled = false;
-        } else {
-            listEl.innerText = 'Aucun fichier PDF valide sélectionné';
-            document.getElementById('processBtn').disabled = true;
-        }
-    }
-
-    function clearAll() {
-        selectedFiles = [];
-        cacheData = [];
-        document.getElementById('fileInput').value = '';
-        document.getElementById('fileList').innerText = 'Aucun fichier sélectionné';
-        document.getElementById('processBtn').disabled = true;
-        document.getElementById('resultsCard').style.display = 'none';
-        document.getElementById('resultsBody').innerHTML = '';
-        document.getElementById('statusProcess').style.display = 'none';
-    }
-
-    function showMsg(id, text, type) {
-        let el = document.getElementById(id);
-        el.className = `status ${type}`;
-        el.innerText = text;
-        el.style.display = 'block';
-    }
-
-    async function fileToPart(file) {
-        return new Promise((res) => {
-            let reader = new FileReader();
-            reader.onloadend = () => res({ inlineData: { data: reader.result.split(',')[1], mimeType: file.type } });
-            reader.readAsDataURL(file);
-        });
-    }
-
-    async function processInvoices() {
-        let keys = [localStorage.getItem('k1'), localStorage.getItem('k2')].filter(Boolean);
-        if(keys.length === 0) {
-            showMsg('statusProcess', '❌ Veuillez enregistrer au moins une clé API.', 'error');
-            return;
-        }
-
-        showMsg('statusProcess', '⏳ Traitement en cours (bascule automatique active)...', 'success');
-        document.getElementById('processBtn').disabled = true;
-        cacheData = [];
-
-        try {
-            for(let file of selectedFiles) {
-                let part = await fileToPart(file);
-                let prompt = `Analyse cette facture pour les douanes suisses (PASSAR/TARES). Réponds UNIQUEMENT en JSON pur sans balises markdown :
-{
-  "shipment_number": "Numéro d'expédition ou AWB",
-  "consignee": "Nom et adresse de l'importateur",
-  "gross_weight": poids brut total (nombre),
-  "net_weight": poids net total (nombre),
-  "net_value": valeur nette hors TVA (nombre),
-  "currency": "Devise",
-  "tares_code": "Code TARES à 8 chiffres"
-}`;
-
-                let textResponse = null;
-                let success = false;
-
-                for(let key of keys) {
-                    try {
-                        let ai = new GoogleGenAI({ apiKey: key });
-                        let res = await ai.models.generateContent({ model: 'gemini-3.8-flash', contents: [part, prompt] });
-                        textResponse = res.text.trim();
-                        success = true;
-                        break;
-                    } catch(e) {
-                        console.warn("Clé saturée, tentative avec la suivante...");
-                    }
-                }
-
-                if(!success) throw new Error("Toutes les clés ont échoué ou atteint leur quota.");
-
-                textResponse = textResponse.replace(/```json/g, '').replace(/```/g, '').trim();
-                let data = JSON.parse(textResponse);
-                data.filename = file.name;
-                cacheData.push(data);
-            }
-
-            let tbody = document.getElementById('resultsBody');
-            tbody.innerHTML = '';
-            cacheData.forEach(d => {
-                tbody.innerHTML += `<tr>
-                    <td><b>${d.shipment_number || '-'}</b><br><small>${d.filename}</small></td>
-                    <td>${d.consignee || '-'}</td>
-                    <td>${d.gross_weight ?? '-'} kg</td>
-                    <td>${d.net_weight ?? '-'} kg</td>
-                    <td><b>${d.net_value ?? '-'} ${d.currency || ''}</b></td>
-                    <td><code>${d.tares_code || '-'}</code></td>
-                </tr>`;
-            });
-            document.getElementById('resultsCard').style.display = 'block';
-            showMsg('statusProcess', '✅ Extraction réussie !', 'success');
-        } catch(err) {
-            showMsg('statusProcess', '❌ Erreur : ' + err.message, 'error');
-        } finally {
-            document.getElementById('processBtn').disabled = false;
-        }
-    }
-
-    function exportExcel() {
-        if(cacheData.length === 0) return;
-        let wsData = cacheData.map(d => ({
-            "N° d'envoi": d.shipment_number,
-            "Fichier": d.filename,
-            "Importateur": d.consignee,
-            "Poids Brut": d.gross_weight,
-            "Poids Net": d.net_weight,
-            "Valeur Hors TVA": d.net_value,
-            "Devise": d.currency,
-            "Code TARES": d.tares_code
-        }));
-        let ws = XLSX.utils.json_to_sheet(wsData);
-        let wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Douane");
-        XLSX.writeFile(wb, "douane_suisse.xlsx");
-    }
-</script>
-
-</body>
-</html>
+        let fileNames = selectedFiles.map(f => f.name).join(',
