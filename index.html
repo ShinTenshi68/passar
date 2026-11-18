@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Extracteur Douane Suisse</title>
+    <script src="https://cdn.jsdelivr.net/npm/@google/genai@0.1.2/dist/index.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f8fafc; color: #1e293b; margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .card { background: #ffffff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }
+        h1 { color: #dc2626; font-size: 22px; text-align: center; }
+        label { display: block; font-weight: bold; font-size: 13px; margin-bottom: 5px; }
+        input[type="password"] { width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; margin-bottom: 10px; box-sizing: border-box; }
+        button { background-color: #dc2626; color: white; border: none; padding: 10px 15px; font-weight: bold; border-radius: 6px; cursor: pointer; }
+        button:hover { background-color: #b91c1c; }
+        button.secondary { background-color: #64748b; }
+        .dropzone { border: 2px dashed #cbd5e1; border-radius: 8px; padding: 25px; text-align: center; background: #f8fafc; cursor: pointer; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
+        th, td { border: 1px solid #e2e8f0; padding: 8px; text-align: left; }
+        th { background: #f1f5f9; }
+        .status { padding: 10px; border-radius: 6px; margin-top: 10px; font-size: 13px; display: none; }
+        .success { background: #dcfce7; color: #166534; }
+        .error { background: #fee2e2; color: #991b1b; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🇨🇭 Extracteur Douane Suisse (PASSAR / TARES)</h1>
+
+    <div class="card">
+        <label>🔑 Clé API Gemini Principale</label>
+        <input type="password" id="apiKey1" placeholder="Collez votre première clé ici...">
+        <label>🛡️ Clé API Gemini de Secours (Optionnel)</label>
+        <input type="password" id="apiKey2" placeholder="Collez votre deuxième clé de secours ici...">
+        <button onclick="saveKeys()">Enregistrer les clés</button>
+        <div id="statusKey" class="status"></div>
+    </div>
+
+    <div class="card">
+        <label>📄 Factures commerciales (PDF)</label>
+        <div class="dropzone" onclick="document.getElementById('fileInput').click()">
+            <b>Glissez ou cliquez ici pour choisir vos fichiers PDF</b>
+            <input type="file" id="fileInput" accept="application/pdf" multiple style="display:none" onchange="handleFiles(this.files)">
+        </div>
+        <div id="fileList" style="margin-top:10px; font-size:13px; color:#64748b;">Aucun fichier sélectionné</div>
+        <div style="margin-top:15px; display:flex; gap:10px;">
+            <button id="processBtn" onclick="processInvoices()" disabled>🚀 Lancer l'extraction</button>
+            <button class="secondary" onclick="clearAll()">🗑️ Tout effacer</button>
+        </div>
+        <div id="statusProcess" class="status"></div>
+    </div>
+
+    <div class="card" id="resultsCard" style="display:none;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3>📊 Résultats</h3>
+            <button onclick="exportExcel()">📥 Télécharger Excel</button>
+        </div>
+        <table id="resultsTable">
+            <thead>
+                <tr>
+                    <th>N° d'envoi</th>
+                    <th>Importateur</th>
+                    <th>Poids Brut</th>
+                    <th>Poids Net</th>
+                    <th>Valeur Hors TVA</th>
+                    <th>Code TARES</th>
+                </tr>
+            </thead>
+            <tbody id="resultsBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    let selectedFiles = [];
+    let cacheData = [];
+
+    window.addEventListener('DOMContentLoaded', () => {
+        if(localStorage.getItem('k1')) {
+            document.getElementById('apiKey1').value = localStorage.getItem('k1');
+        }
+        if(localStorage.getItem('k2')) {
+            document.getElementById('apiKey2').value = localStorage.getItem('k2');
+        }
+        if(localStorage.getItem('k1') || localStorage.getItem('k2')) {
+            showMsg('statusKey', '✅ Clés chargées depuis la mémoire de votre navigateur.', 'success');
+        }
+    });
+
+    function saveKeys() {
+        let k1 = document.getElementById('apiKey1').value.trim();
+        let k2 = document.getElementById('apiKey2').value.trim();
+        if(k1) localStorage.setItem('k1', k1);
+        if(k2) localStorage.setItem('k2', k2);
+        showMsg('statusKey', '✅ Clés enregistrées avec succès ! Vous pouvez maintenant importer vos PDF.', 'success');
+    }
+
+    function handleFiles(files) {
+        selectedFiles = Array.from(files).filter(f => f.type === 'application/pdf');
+        document.getElementById('fileList').innerText = selectedFiles.length > 0 ? `${selectedFiles.length} fichier(s) prêt(s)` : 'Aucun fichier';
+        document.getElementById('processBtn').disabled = selectedFiles.length === 0;
+    }
+
+    function clearAll() {
+        selectedFiles = [];
+        cacheData = [];
+        document.getElementById('fileInput').value = '';
+        document.getElementById('fileList').innerText = 'Aucun fichier sélectionné';
+        document.getElementById('processBtn').disabled = true;
+        document.getElementById('resultsCard').style.display = 'none';
+        document.getElementById('resultsBody').innerHTML = '';
+        document.getElementById('statusProcess').style.display = 'none';
+    }
+
+    function showMsg(id, text, type) {
+        let el = document.getElementById(id);
+        el.className = `status ${type}`;
+        el.innerText = text;
+        el.style.display = 'block';
+    }
+
+    async function fileToPart(file) {
+        return new Promise((res) => {
+            let reader = new FileReader();
+            reader.onloadend = () => res({ inlineData: { data: reader.result.split(',')[1], mimeType: file.type } });
+            reader.readAsDataURL(file);
+        });
+    }
+
+    async function processInvoices() {
+        let keys = [localStorage.getItem('k1'), localStorage.getItem('k2')].filter(Boolean);
+        if(keys.length === 0) {
+            showMsg('statusProcess', '❌ Veuillez enregistrer au moins une clé API avant de lancer l\'extraction.', 'error');
+            return;
+        }
+
+        showMsg('statusProcess', '⏳ Traitement en cours (bascule automatique active si besoin)...', 'success');
+        document.getElementById('processBtn').disabled = true;
+        cacheData = [];
+
+        try {
+            for(let file of selectedFiles) {
+                let part = await fileToPart(file);
+                let prompt = `Analyse cette facture pour les douanes suisses (PASSAR/TARES). Réponds UNIQUEMENT en JSON pur sans balises markdown :
+{
+  "shipment_number": "Numéro d'expédition ou AWB",
+  "consignee": "Nom et adresse de l'importateur",
+  "gross_weight": poids brut total (nombre),
+  "net_weight": poids net total (nombre),
+  "net_value": valeur nette hors TVA (nombre),
+  "currency": "Devise",
+  "tares_code": "Code TARES à 8 chiffres"
+}`;
+
+                let textResponse = null;
+                let success = false;
+
+                for(let key of keys) {
+                    try {
+                        let ai = new GoogleGenAI({ apiKey: key });
+                        let res = await ai.models.generateContent({ model: 'gemini-3.8-flash', contents: [part, prompt] });
+                        textResponse = res.text.trim();
+                        success = true;
+                        break;
+                    } catch(e) {
+                        console.warn("Clé saturée ou invalide, tentative avec la suivante...");
+                    }
+                }
+
+                if(!success) throw new Error("Toutes les clés ont échoué ou atteint leur quota.");
+
+                textResponse = textResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+                let data = JSON.parse(textResponse);
+                data.filename = file.name;
+                cacheData.push(data);
+            }
+
+            let tbody = document.getElementById('resultsBody');
+            tbody.innerHTML = '';
+            cacheData.forEach(d => {
+                tbody.innerHTML += `<tr>
+                    <td><b>${d.shipment_number || '-'}</b><br><small>${d.filename}</small></td>
+                    <td>${d.consignee || '-'}</td>
+                    <td>${d.gross_weight ?? '-'} kg</td>
+                    <td>${d.net_weight ?? '-'} kg</td>
+                    <td><b>${d.net_value ?? '-'} ${d.currency || ''}</b></td>
+                    <td><code>${d.tares_code || '-'}</code></td>
+                </tr>`;
+            });
+            document.getElementById('resultsCard').style.display = 'block';
+            showMsg('statusProcess', '✅ Extraction réussie avec succès !', 'success');
+        } catch(err) {
+            showMsg('statusProcess', '❌ Erreur : ' + err.message, 'error');
+        } finally {
+            document.getElementById('processBtn').disabled = false;
+        }
+    }
+
+    function exportExcel() {
+        if(cacheData.length === 0) return;
+        let wsData = cacheData.map(d => ({
+            "N° d'envoi": d.shipment_number,
+            "Fichier": d.filename,
+            "Importateur": d.consignee,
+            "Poids Brut": d.gross_weight,
+            "Poids Net": d.net_weight,
+            "Valeur Hors TVA": d.net_value,
+            "Devise": d.currency,
+            "Code TARES": d.tares_code
+        }));
+        let ws = XLSX.utils.json_to_sheet(wsData);
+        let wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Douane");
+        XLSX.writeFile(wb, "douane_suisse.xlsx");
+    }
+</script>
+
+</body>
+</html>
